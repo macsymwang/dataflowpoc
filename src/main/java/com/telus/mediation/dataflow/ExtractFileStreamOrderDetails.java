@@ -68,31 +68,19 @@ public class ExtractFileStreamOrderDetails {
                 .apply(FileIO.readMatches());
         // Watch.Growth.<String>never()
         // Watch.Growth.afterTimeSinceNewOutput(Duration.standardMinutes(10))
-        PCollection<String> filelist = files
-                .apply("Collect file names",
-                        ParDo.of(
-                                new DoFn<FileIO.ReadableFile, String>() {
-                                    @ProcessElement
-                                    public void process(@Element ReadableFile file, OutputReceiver<String> out) {
-                                        // We can now access the file and its metadata.
-                                        logger.info("New File Name is {} ", "gs://" + bucketName + "/" + file);
-                                        out.output(file.getMetadata().resourceId().toString());
-                                    }
-                                }));
+        // PCollection<String> filelist = files
+        // .apply("Collect file names",
+        // ParDo.of(
+        // new DoFn<FileIO.ReadableFile, String>() {
+        // @ProcessElement
+        // public void process(@Element ReadableFile file, OutputReceiver<String> out) {
+        // // We can now access the file and its metadata.
+        // logger.info("New File Name is {} ", "gs://" + bucketName + "/" + file);
+        // out.output(file.getMetadata().resourceId().toString());
+        // }
+        // }));
 
-        PCollection<String> jsons = filelist.apply("Read Files", TextIO.readAll());
-
-        PCollection<OrderDetails> orderDetails = jsons.apply("Parse Json to Beam Rows",
-                ParDo.of(new ConvertSalesDetailsFn()));
-
-        orderDetails.apply("Convert to BigQuery TableRow", ParDo.of(new FormatForBigquery()))
-                .apply("Write into BigQuery",
-                        BigQueryIO.writeTableRows().to(tableRef).withSchema(FormatForBigquery.getSchema())
-                                .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_IF_NEEDED)
-                                .withWriteDisposition(isStreaming ? BigQueryIO.Write.WriteDisposition.WRITE_APPEND
-                                        : BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE));
-
-        files.apply(Wait.on(orderDetails)).apply("Archive Files",
+        PCollection<String> filelist = files.apply("Archive Files",
                 ParDo.of(
                         new DoFn<FileIO.ReadableFile, String>() {
                             @ProcessElement
@@ -110,9 +98,25 @@ public class ExtractFileStreamOrderDetails {
                                         Storage.CopyRequest.newBuilder().setSource(source)
                                                 .setTarget(target).build());
                                 storage.get(source).delete();
-                                out.output(StringUtils.replaceOnce(fileName, "input_data", "archive"));
+                                logger.info("New File Name is {} ",
+                                        "gs://" + bucketName + "/"
+                                                + StringUtils.replaceOnce(fileName, "input_data", "archive"));
+                                out.output("gs://" + bucketName + "/"
+                                        + StringUtils.replaceOnce(fileName, "input_data", "archive"));
                             }
                         }));
+
+        PCollection<String> jsons = filelist.apply("Read Files", TextIO.readAll());
+
+        PCollection<OrderDetails> orderDetails = jsons.apply("Parse Json to Beam Rows",
+                ParDo.of(new ConvertSalesDetailsFn()));
+
+        orderDetails.apply("Convert to BigQuery TableRow", ParDo.of(new FormatForBigquery()))
+                .apply("Write into BigQuery",
+                        BigQueryIO.writeTableRows().to(tableRef).withSchema(FormatForBigquery.getSchema())
+                                .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_IF_NEEDED)
+                                .withWriteDisposition(isStreaming ? BigQueryIO.Write.WriteDisposition.WRITE_APPEND
+                                        : BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE));
 
         p.run().waitUntilFinish();
     }
@@ -154,4 +158,5 @@ public class ExtractFileStreamOrderDetails {
             return new TableSchema().setFields(fields);
         }
     }
+
 }
