@@ -11,6 +11,7 @@ import org.json.JSONObject;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubIO;
+import org.apache.beam.sdk.io.gcp.pubsub.PubsubMessage;
 import org.joda.time.Duration;
 
 import org.slf4j.Logger;
@@ -44,11 +45,12 @@ public class ExtractPubSubToBQ {
         Pipeline pipeline = Pipeline.create(options);
         pipeline.apply("ReadPubSubSubscription",
                 PubsubIO.readStrings().fromSubscription(options.getInputSubscription()))
-                .apply("Extract Data From Message", ParDo.of(new ConvertMessageToData()))
+                .apply("Extract Data From Message", ParDo.of(new ConvertStringMessageToData()))
                 .apply("Print Out Data", ParDo.of(new PrintMessageFn()))
                 .apply("Convert to TableRow", ParDo.of(new ConvertDataToTableRow()))
                 .apply("Write into BigQuery",
-                        BigQueryIO.writeTableRows().to(tableRef).withSchema(ConvertDataToTableRow.getSchema())
+                        BigQueryIO.writeTableRows().to(options.getOutputTable())
+                                .withSchema(ConvertDataToTableRow.getSchema())
                                 .withMethod(BigQueryIO.Write.Method.FILE_LOADS)
                                 .withTriggeringFrequency(Duration.standardSeconds(5))
                                 .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_IF_NEEDED)
@@ -57,7 +59,17 @@ public class ExtractPubSubToBQ {
         pipeline.run().waitUntilFinish();
     }
 
-    static class ConvertMessageToData extends DoFn<String, String> {
+    static class ConvertMessageToData extends DoFn<PubsubMessage, String> {
+        @ProcessElement
+        public void processElement(@Element String element, OutputReceiver<String> receiver) {
+            String textStr[] = element.split("\\r?\\n");
+            for (String splitString : textStr) {
+                receiver.output(splitString);
+            }
+        }
+    }
+
+    static class ConvertStringMessageToData extends DoFn<String, String> {
         @ProcessElement
         public void processElement(@Element String element, OutputReceiver<String> receiver) {
             String textStr[] = element.split("\\r?\\n");
