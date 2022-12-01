@@ -3,6 +3,11 @@ package com.telus.mediation.dataflow;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.WritableByteChannel;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.transforms.DoFn;
@@ -12,15 +17,29 @@ import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubIO;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubMessage;
+import com.google.common.io.ByteStreams;
 import org.joda.time.Duration;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.beam.sdk.io.FileSystems;
+import org.apache.beam.sdk.io.TextIO;
+import org.apache.beam.sdk.io.fs.ResourceId;
 import com.google.api.services.bigquery.model.TableReference;
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.api.services.bigquery.model.TableSchema;
 import com.google.api.services.bigquery.model.TableFieldSchema;
+import org.apache.beam.sdk.options.ValueProvider;
+import org.apache.beam.sdk.options.ValueProvider.NestedValueProvider;
+import org.apache.beam.sdk.transforms.Flatten;
+import org.apache.beam.sdk.transforms.MapElements;
+import org.apache.beam.sdk.transforms.SimpleFunction;
+import org.apache.beam.sdk.transforms.Watch.Growth;
+import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.sdk.values.PCollectionList;
+import org.apache.beam.sdk.values.PCollectionTuple;
+import org.apache.beam.sdk.values.TupleTag;
 
 import com.telus.mediation.dataflow.template.PrintMessageFn;
 import com.telus.mediation.dataflow.template.ProcessOptions;
@@ -51,8 +70,10 @@ public class ExtractGzipPubSubToBQ {
                 .apply("Print Out Data", ParDo.of(new PrintMessageFn()))
                 .apply("Convert to TableRow", ParDo.of(new ConvertDataToTableRow()))
                 .apply("Write into BigQuery",
-                        BigQueryIO.writeTableRows().to(options.getOutputTable())
-                                .withSchema(ConvertDataToTableRow.getSchema())
+                        BigQueryIO.writeTableRows()
+                                .withJsonSchema(getSchemaFromGCS(options.getJSONPath())) // withSchema(ConvertDataToTableRow.getSchema())
+                                .to(options.getOutputTable())
+                                .withoutValidation()
                                 .withMethod(BigQueryIO.Write.Method.FILE_LOADS)
                                 .withTriggeringFrequency(Duration.standardSeconds(5))
                                 .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_IF_NEEDED)
@@ -122,4 +143,38 @@ public class ExtractGzipPubSubToBQ {
             return new TableSchema().setFields(fields);
         }
     }
+
+    /**
+     * Method to read a BigQuery schema file from GCS and return the file contents
+     * as a string.
+     *
+     * @param gcsPath Path string for the schema file in GCS.
+     * @return File contents as a string.
+     */
+    private static ValueProvider<String> getSchemaFromGCS(ValueProvider<String> gcsPath) {
+        return NestedValueProvider.of(
+                gcsPath,
+                new SimpleFunction<String, String>() {
+                    @Override
+                    public String apply(String input) {
+                        ResourceId sourceResourceId = FileSystems.matchNewResource(input, false);
+
+                        String schema;
+                        try (ReadableByteChannel rbc = FileSystems.open(sourceResourceId)) {
+                            try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+                                try (WritableByteChannel wbc = Channels.newChannel(baos)) {
+                                    ByteStreams.copy(rbc, wbc);
+                                    schema = baos.toString(StandardCharsets.UTF_8.name());
+                                    LOG.info("Extracted schema: " + schema);
+                                }
+                            }
+                        } catch (IOException e) {
+                            LOG.error("Error extracting schema: " + e.getMessage());
+                            throw new RuntimeException(e);
+                        }
+                        return schema;
+                    }
+                });
+    }
+
 }
